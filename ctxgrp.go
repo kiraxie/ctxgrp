@@ -2,10 +2,13 @@ package ctxgrp
 
 import (
 	"context"
+	"errors"
 	"sync"
 	"sync/atomic"
 	"time"
 )
+
+var ErrResetTimerFailed = errors.New("reset timer failed")
 
 type ContextFunc func(ctx context.Context) error
 
@@ -28,6 +31,49 @@ func (t *Group) Err() error {
 
 func (t *Group) Value(key any) any {
 	return t.ctx.Value(key)
+}
+
+func (t *Group) Loop(f ContextFunc) {
+	t.wg.Add(1)
+
+	go func() {
+		defer t.wg.Done()
+
+		for {
+			select {
+			case <-t.ctx.Done():
+				return
+			default:
+				if err := f(t.ctx); err != nil {
+					t.CancelError(err)
+				}
+			}
+		}
+	}()
+}
+
+func (t *Group) TimerLoop(d time.Duration, f ContextFunc) {
+	t.wg.Add(1)
+
+	go func() {
+		defer t.wg.Done()
+		tm := time.NewTimer(0)
+		defer tm.Stop()
+
+		for {
+			select {
+			case <-t.ctx.Done():
+				return
+			case <-tm.C:
+				if err := f(t.ctx); err != nil {
+					t.CancelError(err)
+				}
+				if tm.Reset(d) {
+					t.CancelError(ErrResetTimerFailed)
+				}
+			}
+		}
+	}()
 }
 
 func (t *Group) Go(f ContextFunc) {
