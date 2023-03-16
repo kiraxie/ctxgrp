@@ -26,7 +26,7 @@ func TestGroup(t *testing.T) {
 	}()
 	grp2 := ctxgrp.New(context.Background())
 	defer func() {
-		require.Error(grp2.Close())
+		require.ErrorIs(context.DeadlineExceeded, grp2.Close())
 	}()
 
 	grp1.Go(func(ctx context.Context) error {
