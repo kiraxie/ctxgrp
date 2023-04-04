@@ -2,6 +2,7 @@ package ctxgrp_test
 
 import (
 	"context"
+	"fmt"
 	"sync/atomic"
 	"testing"
 	"time"
@@ -9,6 +10,7 @@ import (
 	"github.com/kiraxie/ctxgrp"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
+	"github.com/stretchr/testify/suite"
 )
 
 func TestGroup(t *testing.T) {
@@ -32,7 +34,7 @@ func TestGroup(t *testing.T) {
 	grp1.Go(func(ctx context.Context) error {
 		time.Sleep(400 * time.Millisecond)
 		atomic.AddInt64(&count1, 1)
-		grp1.Cancel()
+		grp1.Stop()
 
 		return nil
 	})
@@ -199,4 +201,116 @@ func TestGroupFork(t *testing.T) {
 	assert.InDelta(1*step, timeFork3.Sub(start), float64(delta))
 	assert.InDelta(5*step, timeFork4.Sub(start), float64(delta))
 	assert.InDelta(9*step, time.Since(start), float64(delta))
+}
+
+//          -----------------------------
+//          |     --->    stop   --     |
+//  new -> run --|                |-- wait
+//          |    ---> stop error --
+//          ------------------------> close
+
+type testListenerSuite struct {
+	suite.Suite
+	ctx                          context.Context
+	cancel                       context.CancelFunc
+	group                        ctxgrp.Group
+	listener                     ctxgrp.Listener
+	runner, stopping, terminated bool
+	failed                       error
+}
+
+func (t *testListenerSuite) SetupTest() {
+	t.ctx, t.cancel = context.WithTimeout(context.Background(), time.Second)
+	t.group = ctxgrp.New(t.ctx)
+	t.Require().EqualValues(ctxgrp.StateNew, t.group.State())
+	t.runner = false
+	t.stopping = false
+	t.terminated = false
+	t.failed = nil
+	listener := ctxgrp.NewListener(
+		func() { t.runner = true },
+		func() { t.stopping = true },
+		func() { t.terminated = true },
+		func(err error) { t.failed = err },
+	)
+	t.group.AddListener(listener)
+}
+
+func (t *testListenerSuite) TearDownTest() {
+	t.cancel()
+}
+
+func (t *testListenerSuite) TestNewRunWait() {
+	t.group.Go(func(ctx context.Context) error {
+		return nil
+	})
+	t.Eventually(func() bool { return t.runner }, time.Second, 100*time.Millisecond)
+	t.NoError(t.group.Wait())
+	t.True(t.runner)
+	t.False(t.terminated)
+	t.True(t.stopping)
+	t.NoError(t.failed)
+}
+
+func (t *testListenerSuite) TestNewRunWaitContextDone() {
+	t.group.Go(func(ctx context.Context) error {
+		<-ctx.Done()
+		return nil
+	})
+	t.Eventually(func() bool { return t.runner }, time.Second, 100*time.Millisecond)
+	t.NoError(t.group.Wait())
+	t.Eventually(func() bool { return t.stopping }, 2*time.Second, 100*time.Millisecond)
+	t.True(t.runner)
+	t.False(t.terminated)
+	t.True(t.stopping)
+	t.NoError(t.failed)
+}
+
+func (t *testListenerSuite) TestNewRunStopWait() {
+	t.group.Go(func(ctx context.Context) error {
+		return nil
+	})
+	t.Eventually(func() bool { return t.runner }, time.Second, 100*time.Millisecond)
+	t.group.Stop()
+	t.Eventually(func() bool { return t.terminated }, time.Second, 100*time.Millisecond)
+	t.NoError(t.group.Wait())
+	t.Eventually(func() bool { return t.stopping }, time.Second, 100*time.Millisecond)
+	t.True(t.runner)
+	t.True(t.terminated)
+	t.True(t.stopping)
+	t.NoError(t.failed)
+}
+
+func (t *testListenerSuite) TestNewRunStopErrorWait() {
+	t.group.Go(func(ctx context.Context) error {
+		return nil
+	})
+	t.Eventually(func() bool { return t.runner }, time.Second, 100*time.Millisecond)
+	t.group.StopError(fmt.Errorf("test"))
+	t.Eventually(func() bool { return t.failed != nil }, time.Second, 100*time.Millisecond)
+	t.Error(t.group.Wait())
+	t.True(t.runner)
+	t.False(t.terminated)
+	t.False(t.stopping)
+	t.Error(t.failed)
+}
+
+func (t *testListenerSuite) TestNewRunClose() {
+	t.group.Go(func(ctx context.Context) error {
+		time.Sleep(200 * time.Millisecond)
+		return nil
+	})
+	t.group.Go(func(ctx context.Context) error {
+		time.Sleep(600 * time.Millisecond)
+		return nil
+	})
+	t.NoError(t.group.Close())
+	t.True(t.runner)
+	t.False(t.terminated)
+	t.True(t.stopping)
+	t.NoError(t.failed)
+}
+
+func TestListener(t *testing.T) {
+	suite.Run(t, &testListenerSuite{})
 }
