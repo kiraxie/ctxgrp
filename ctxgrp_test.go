@@ -3,6 +3,8 @@ package ctxgrp_test
 import (
 	"context"
 	"fmt"
+	"os"
+	"sync"
 	"sync/atomic"
 	"testing"
 	"time"
@@ -12,6 +14,8 @@ import (
 	"github.com/stretchr/testify/require"
 	"github.com/stretchr/testify/suite"
 )
+
+var ErrTest = fmt.Errorf("test error")
 
 func TestGroup(t *testing.T) {
 	t.Parallel()
@@ -214,7 +218,6 @@ type testListenerSuite struct {
 	ctx                          context.Context
 	cancel                       context.CancelFunc
 	group                        ctxgrp.Group
-	listener                     ctxgrp.Listener
 	runner, stopping, terminated bool
 	failed                       error
 }
@@ -255,6 +258,7 @@ func (t *testListenerSuite) TestNewRunWait() {
 func (t *testListenerSuite) TestNewRunWaitContextDone() {
 	t.group.Go(func(ctx context.Context) error {
 		<-ctx.Done()
+
 		return nil
 	})
 	t.Eventually(func() bool { return t.runner }, time.Second, 100*time.Millisecond)
@@ -286,7 +290,7 @@ func (t *testListenerSuite) TestNewRunStopErrorWait() {
 		return nil
 	})
 	t.Eventually(func() bool { return t.runner }, time.Second, 100*time.Millisecond)
-	t.group.StopError(fmt.Errorf("test"))
+	t.group.StopError(ErrTest)
 	t.Eventually(func() bool { return t.failed != nil }, time.Second, 100*time.Millisecond)
 	t.Error(t.group.Wait())
 	t.True(t.runner)
@@ -298,10 +302,12 @@ func (t *testListenerSuite) TestNewRunStopErrorWait() {
 func (t *testListenerSuite) TestNewRunClose() {
 	t.group.Go(func(ctx context.Context) error {
 		time.Sleep(200 * time.Millisecond)
+
 		return nil
 	})
 	t.group.Go(func(ctx context.Context) error {
 		time.Sleep(600 * time.Millisecond)
+
 		return nil
 	})
 	t.NoError(t.group.Close())
@@ -312,5 +318,47 @@ func (t *testListenerSuite) TestNewRunClose() {
 }
 
 func TestListener(t *testing.T) {
+	t.Parallel()
 	suite.Run(t, &testListenerSuite{})
+}
+
+func TestWaitStopErr(t *testing.T) {
+	t.Parallel()
+	assert := assert.New(t)
+	assert.NotNil(assert)
+	require := require.New(t)
+	require.NotNil(require)
+
+	ctx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
+	defer cancel()
+	grp := ctxgrp.New(ctx)
+
+	grp.Go(func(ctx context.Context) error {
+		<-ctx.Done()
+
+		return nil
+	})
+
+	go func() {
+		time.Sleep(time.Second)
+		grp.StopError(os.ErrClosed)
+	}()
+
+	assert.ErrorIs(grp.Wait(), os.ErrClosed)
+}
+
+func TestDone(t *testing.T) {
+	t.Parallel()
+	assert := assert.New(t)
+	grp := ctxgrp.New(context.Background())
+	wg := sync.WaitGroup{}
+	wg.Add(10)
+	for i := 0; i < 10; i++ {
+		go func() {
+			<-grp.Done()
+			wg.Done()
+		}()
+	}
+	assert.NoError(grp.Close())
+	wg.Wait()
 }

@@ -22,6 +22,7 @@ func (t State) String() string {
 		return "Failed"
 	default:
 	}
+
 	return fmt.Sprintf("Unknown state: %d", t)
 }
 

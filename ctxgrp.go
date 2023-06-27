@@ -43,7 +43,7 @@ func (t *group) Done() <-chan struct{} {
 	go func() {
 		t.wg.Wait()
 		t.cancel()
-		ch <- struct{}{}
+		close(ch)
 	}()
 
 	return ch
@@ -235,6 +235,7 @@ func (t *group) Close() (err error) {
 	if t.err != nil {
 		return t.err
 	}
+
 	return nil
 }
 
